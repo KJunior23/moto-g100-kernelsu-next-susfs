@@ -17,6 +17,7 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             git \
             make \
@@ -42,28 +43,54 @@ jobs:
 
       - name: Download LLVM 21.1.8
         run: |
+          set -e
+
           mkdir -p "$GITHUB_WORKSPACE/toolchain"
+
           cd "$GITHUB_WORKSPACE/toolchain"
 
-          wget -q \
-            https://github.com/llvm/llvm-project/releases/download/LLVM-21.1.8-Linux-X64.tar.xz
+          LLVM_URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X64.tar.xz"
 
-          tar -xf LLVM-21.1.8-Linux-X86_64.tar.xz
+          echo "Downloading:"
+          echo "$LLVM_URL"
 
-          LLVM_DIR="$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -type d -name 'LLVM-*' | head -n 1)"
+          wget \
+            --server-response \
+            --show-progress \
+            -O LLVM-21.1.8-Linux-X64.tar.xz \
+            "$LLVM_URL"
+
+          echo "Download completed."
+
+          ls -lh LLVM-21.1.8-Linux-X64.tar.xz
+
+          tar -xf LLVM-21.1.8-Linux-X64.tar.xz
+
+          LLVM_DIR="$GITHUB_WORKSPACE/toolchain/LLVM-21.1.8-Linux-X64"
+
+          test -d "$LLVM_DIR"
+          test -x "$LLVM_DIR/bin/clang"
+          test -x "$LLVM_DIR/bin/ld.lld"
+
           echo "LLVM_DIR=$LLVM_DIR" >> "$GITHUB_ENV"
           echo "$LLVM_DIR/bin" >> "$GITHUB_PATH"
 
+          echo "LLVM:"
           "$LLVM_DIR/bin/clang" --version
+
+          echo "LLD:"
           "$LLVM_DIR/bin/ld.lld" --version
 
       - name: Clone exact kernel source
         run: |
+          set -e
+
           git clone \
             https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
             kernel
 
           cd kernel
+
           git checkout 596146a4c4134a2190d9309c341db92ee015d5eb
 
           echo "Kernel commit:"
@@ -71,13 +98,19 @@ jobs:
 
       - name: Verify exact source commit
         run: |
+          set -e
+
           cd kernel
 
           test "$(git rev-parse HEAD)" = \
             "596146a4c4134a2190d9309c341db92ee015d5eb"
 
+          echo "Correct kernel commit confirmed."
+
       - name: Apply our exact local kernel integration
         run: |
+          set -e
+
           cd kernel
 
           git apply \
@@ -85,27 +118,35 @@ jobs:
             --whitespace=nowarn \
             ../moto-g100-local-integration.patch
 
+          echo "Integration patch applied successfully."
+
       - name: Verify integration patch
         run: |
+          set -e
+
           cd kernel
 
           test -f drivers/kernelsu/Kconfig
           test -f drivers/kernelsu/ksu.c
+
           test -f fs/susfs.c
           test -f include/linux/susfs.h
           test -f include/linux/susfs_def.h
 
-          grep -q 'SUSFS_VERSION' include/linux/susfs.h
-          grep -q 'KSU_MANUAL_HOOK' drivers/kernelsu/Kconfig
-
-          echo "KernelSU Next + SUSFS integration files found."
+          echo "KernelSU Next files found."
+          echo "SUSFS files found."
 
       - name: Verify SUSFS version
         run: |
+          set -e
+
           cd kernel
 
-          grep -n 'SUSFS_VERSION' include/linux/susfs.h || true
-          grep -R 'CONFIG_KSU_SUSFS' -n drivers/kernelsu/Kconfig | head -20 || true
+          echo "SUSFS version:"
+          grep 'SUSFS_VERSION' include/linux/susfs.h
+
+          echo "KernelSU manual hook configuration:"
+          grep -n 'KSU_MANUAL_HOOK' drivers/kernelsu/Kconfig || true
 
       - name: Create output directory
         run: |
@@ -121,13 +162,23 @@ jobs:
           HOSTCC: clang
           HOSTLD: ld.lld
         run: |
-          make O=out ARCH=arm64 vendor/kona-perf_defconfig
+          set -e
+
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            HOSTCC=clang \
+            HOSTLD=ld.lld \
+            vendor/kona-perf_defconfig
 
       - name: Verify important kernel configuration
         working-directory: kernel
         run: |
+          echo "Important configuration:"
           grep -E \
-            'CONFIG_(KSU|KPROBES|KRETPROBES|KSU_MANUAL_HOOK|KSU_SYSCALL_TABLE_HOOK|KSU_SUSFS|SECURITY_SELINUX|DEFAULT_SECURITY)' \
+            'CONFIG_(KSU|KPROBES|KRETPROBES|KPROBE_EVENTS|KSU_MANUAL_HOOK|KSU_SYSCALL_TABLE_HOOK|KSU_SUSFS|SECURITY_SELINUX|DEFAULT_SECURITY)' \
             out/.config || true
 
       - name: Build kernel
@@ -140,6 +191,8 @@ jobs:
           HOSTLD: ld.lld
           KCFLAGS: "-Wno-error -Wno-error=strict-prototypes"
         run: |
+          set -e
+
           make \
             O=out \
             ARCH=arm64 \
@@ -153,17 +206,25 @@ jobs:
       - name: Verify kernel image
         working-directory: kernel
         run: |
+          set -e
+
           test -f out/arch/arm64/boot/Image
           test -f out/vmlinux
 
-          sha256sum out/arch/arm64/boot/Image
-          sha256sum out/vmlinux
-
+          echo "Kernel Image:"
           ls -lh out/arch/arm64/boot/Image
+
+          sha256sum out/arch/arm64/boot/Image
+
+          echo "vmlinux:"
           ls -lh out/vmlinux
+
+          sha256sum out/vmlinux
 
       - name: Download Android mkbootimg tools
         run: |
+          set -e
+
           mkdir -p "$GITHUB_WORKSPACE/android-tools"
 
           git clone \
@@ -176,6 +237,7 @@ jobs:
             -o "$GITHUB_WORKSPACE/android-tools/avb.tar.gz"
 
           mkdir -p "$GITHUB_WORKSPACE/android-tools/avb"
+
           tar -xzf \
             "$GITHUB_WORKSPACE/android-tools/avb.tar.gz" \
             -C "$GITHUB_WORKSPACE/android-tools/avb"
@@ -189,10 +251,17 @@ jobs:
       - name: Build boot image
         working-directory: kernel
         run: |
+          set -e
+
           mkdir -p boot-final
 
-          cp ../ramdisk-g100-original boot-final/ramdisk
-          cp out/arch/arm64/boot/Image boot-final/Image
+          cp \
+            ../ramdisk-g100-original \
+            boot-final/ramdisk
+
+          cp \
+            out/arch/arm64/boot/Image \
+            boot-final/Image
 
           python3 \
             ../android-tools/mkbootimg/mkbootimg.py \
@@ -221,20 +290,25 @@ jobs:
             boot-final/boot-pre-avb.img \
             boot-final/boot-kernelsu-next-susfs.img
 
-          sha256sum \
-            boot-final/boot-kernelsu-next-susfs.img
+          echo "Boot image:"
+          ls -lh boot-final/boot-kernelsu-next-susfs.img
 
-          ls -lh \
+          sha256sum \
             boot-final/boot-kernelsu-next-susfs.img
 
       - name: Verify boot image size
         working-directory: kernel
         run: |
+          set -e
+
           SIZE=$(stat -c%s boot-final/boot-kernelsu-next-susfs.img)
 
-          echo "Boot image size: $SIZE bytes"
+          echo "Boot image size:"
+          echo "$SIZE bytes"
 
           test "$SIZE" -eq 100663296
+
+          echo "Boot image size is correct."
 
       - name: Create build information
         working-directory: kernel
@@ -244,8 +318,8 @@ jobs:
 
           Kernel:
           LineageOS/android_kernel_motorola_sm8250
-          commit: 596146a4c4134a2190d9309c341db92ee015d5eb
           branch: backup/lineage-20_20221213
+          commit: 596146a4c4134a2190d9309c341db92ee015d5eb
 
           KernelSU Next:
           branch: legacy
@@ -256,11 +330,11 @@ jobs:
           commit: 001e699
           version: v1.5.5
 
-          Kernel build:
+          Toolchain:
+          LLVM 21.1.8
           ARCH=arm64
           LLVM=1
           LLVM_IAS=1
-          clang=21.1.8
 
           Boot:
           header_version=3
@@ -270,7 +344,11 @@ jobs:
           partition=boot
 
           Original ramdisk preserved.
-          Original boot AVB properties preserved.
+
+          Original AVB properties preserved:
+          fingerprint=motorola/nio_retail/nio:11/S1RTS32.41-20-16-1-11/3797e3:user/release-keys
+          os_version=11
+          security_patch=2023-03-01
           EOF
 
           cat boot-final/BUILD-INFO.txt
