@@ -120,18 +120,49 @@ jobs:
 
           echo "Integration patch applied successfully."
 
-      - name: Verify integration patch
+            - name: Verify integration patch
         run: |
-          set -e
+          set -u
 
           cd kernel
 
-          test -f drivers/kernelsu/Kconfig
-          test -f drivers/kernelsu/ksu.c
+          echo "===== VERIFICANDO ARQUIVOS DO KERNELSU NEXT + SUSFS ====="
 
-          test -f fs/susfs.c
-          test -f include/linux/susfs.h
-          test -f include/linux/susfs_def.h
+          missing=0
+
+          files=(
+            "drivers/kernelsu/Kconfig"
+            "drivers/kernelsu/ksu.c"
+            "fs/susfs.c"
+            "include/linux/susfs.h"
+            "include/linux/susfs_def.h"
+          )
+
+          for f in "${files[@]}"; do
+            if test -f "$f"; then
+              echo "OK      $f"
+            else
+              echo "MISSING $f"
+              missing=1
+            fi
+          done
+
+          echo
+          echo "===== CONTEÚDO DE drivers/kernelsu ====="
+
+          if test -d drivers/kernelsu; then
+            find drivers/kernelsu -maxdepth 2 -type f | sort | head -100
+          else
+            echo "MISSING: diretório drivers/kernelsu"
+          fi
+
+          echo
+          echo "===== VERIFICAÇÃO DO PATCH ====="
+
+          if test "$missing" -ne 0; then
+            echo "ERRO: um ou mais arquivos da integração não foram encontrados."
+            exit 1
+          fi
 
           echo "KernelSU Next files found."
           echo "SUSFS files found."
