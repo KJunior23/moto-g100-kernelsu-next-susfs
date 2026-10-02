@@ -46,7 +46,7 @@ jobs:
           cd "$GITHUB_WORKSPACE/toolchain"
 
           wget -q \
-            https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X86_64.tar.xz
+            https://github.com/llvm/llvm-project/releases/download/LLVM-21.1.8-Linux-X64.tar.xz
 
           tar -xf LLVM-21.1.8-Linux-X86_64.tar.xz
 
