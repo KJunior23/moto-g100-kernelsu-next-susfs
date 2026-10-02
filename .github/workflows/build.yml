@@ -1,0 +1,287 @@
+name: Build Moto G100 KernelSU Next + SUSFS
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout build repository
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            git \
+            make \
+            bc \
+            bison \
+            flex \
+            cpio \
+            rsync \
+            unzip \
+            zip \
+            python3 \
+            python3-pip \
+            python3-setuptools \
+            libssl-dev \
+            libelf-dev \
+            dwarves \
+            pahole \
+            openssl \
+            wget \
+            curl \
+            xz-utils \
+            ca-certificates
+
+      - name: Download LLVM 21.1.8
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/toolchain"
+          cd "$GITHUB_WORKSPACE/toolchain"
+
+          wget -q \
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-21.1.8/LLVM-21.1.8-Linux-X86_64.tar.xz
+
+          tar -xf LLVM-21.1.8-Linux-X86_64.tar.xz
+
+          LLVM_DIR="$(find "$GITHUB_WORKSPACE/toolchain" -maxdepth 1 -type d -name 'LLVM-*' | head -n 1)"
+          echo "LLVM_DIR=$LLVM_DIR" >> "$GITHUB_ENV"
+          echo "$LLVM_DIR/bin" >> "$GITHUB_PATH"
+
+          "$LLVM_DIR/bin/clang" --version
+          "$LLVM_DIR/bin/ld.lld" --version
+
+      - name: Clone exact kernel source
+        run: |
+          git clone \
+            https://github.com/LineageOS/android_kernel_motorola_sm8250.git \
+            kernel
+
+          cd kernel
+          git checkout 596146a4c4134a2190d9309c341db92ee015d5eb
+
+          echo "Kernel commit:"
+          git rev-parse HEAD
+
+      - name: Verify exact source commit
+        run: |
+          cd kernel
+
+          test "$(git rev-parse HEAD)" = \
+            "596146a4c4134a2190d9309c341db92ee015d5eb"
+
+      - name: Apply our exact local kernel integration
+        run: |
+          cd kernel
+
+          git apply \
+            --binary \
+            --whitespace=nowarn \
+            ../moto-g100-local-integration.patch
+
+      - name: Verify integration patch
+        run: |
+          cd kernel
+
+          test -f drivers/kernelsu/Kconfig
+          test -f drivers/kernelsu/ksu.c
+          test -f fs/susfs.c
+          test -f include/linux/susfs.h
+          test -f include/linux/susfs_def.h
+
+          grep -q 'SUSFS_VERSION' include/linux/susfs.h
+          grep -q 'KSU_MANUAL_HOOK' drivers/kernelsu/Kconfig
+
+          echo "KernelSU Next + SUSFS integration files found."
+
+      - name: Verify SUSFS version
+        run: |
+          cd kernel
+
+          grep -n 'SUSFS_VERSION' include/linux/susfs.h || true
+          grep -R 'CONFIG_KSU_SUSFS' -n drivers/kernelsu/Kconfig | head -20 || true
+
+      - name: Create output directory
+        run: |
+          cd kernel
+          mkdir -p out
+
+      - name: Generate Moto G100 defconfig
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          LLVM: "1"
+          LLVM_IAS: "1"
+          HOSTCC: clang
+          HOSTLD: ld.lld
+        run: |
+          make O=out ARCH=arm64 vendor/kona-perf_defconfig
+
+      - name: Verify important kernel configuration
+        working-directory: kernel
+        run: |
+          grep -E \
+            'CONFIG_(KSU|KPROBES|KRETPROBES|KSU_MANUAL_HOOK|KSU_SYSCALL_TABLE_HOOK|KSU_SUSFS|SECURITY_SELINUX|DEFAULT_SECURITY)' \
+            out/.config || true
+
+      - name: Build kernel
+        working-directory: kernel
+        env:
+          ARCH: arm64
+          LLVM: "1"
+          LLVM_IAS: "1"
+          HOSTCC: clang
+          HOSTLD: ld.lld
+          KCFLAGS: "-Wno-error -Wno-error=strict-prototypes"
+        run: |
+          make \
+            O=out \
+            ARCH=arm64 \
+            LLVM=1 \
+            LLVM_IAS=1 \
+            HOSTCC=clang \
+            HOSTLD=ld.lld \
+            KCFLAGS="-Wno-error -Wno-error=strict-prototypes" \
+            -j2
+
+      - name: Verify kernel image
+        working-directory: kernel
+        run: |
+          test -f out/arch/arm64/boot/Image
+          test -f out/vmlinux
+
+          sha256sum out/arch/arm64/boot/Image
+          sha256sum out/vmlinux
+
+          ls -lh out/arch/arm64/boot/Image
+          ls -lh out/vmlinux
+
+      - name: Download Android mkbootimg tools
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/android-tools"
+
+          git clone \
+            --depth=1 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg \
+            "$GITHUB_WORKSPACE/android-tools/mkbootimg"
+
+          curl -L \
+            "https://android.googlesource.com/platform/external/avb/+archive/refs/tags/android-vts-12.1_r8.tar.gz" \
+            -o "$GITHUB_WORKSPACE/android-tools/avb.tar.gz"
+
+          mkdir -p "$GITHUB_WORKSPACE/android-tools/avb"
+          tar -xzf \
+            "$GITHUB_WORKSPACE/android-tools/avb.tar.gz" \
+            -C "$GITHUB_WORKSPACE/android-tools/avb"
+
+          chmod +x \
+            "$GITHUB_WORKSPACE/android-tools/mkbootimg/mkbootimg.py"
+
+          chmod +x \
+            "$GITHUB_WORKSPACE/android-tools/avb/avbtool"
+
+      - name: Build boot image
+        working-directory: kernel
+        run: |
+          mkdir -p boot-final
+
+          cp ../ramdisk-g100-original boot-final/ramdisk
+          cp out/arch/arm64/boot/Image boot-final/Image
+
+          python3 \
+            ../android-tools/mkbootimg/mkbootimg.py \
+            --header_version 3 \
+            --kernel boot-final/Image \
+            --ramdisk boot-final/ramdisk \
+            --pagesize 4096 \
+            --os_version 11.0.0 \
+            --os_patch_level 2023-03 \
+            --cmdline "" \
+            --output boot-final/boot-pre-avb.img
+
+          python3 \
+            ../android-tools/avb/avbtool \
+            add_hash_footer \
+            --image boot-final/boot-pre-avb.img \
+            --partition_name boot \
+            --partition_size 100663296 \
+            --algorithm NONE \
+            --salt 223b5f571013885c634886688731a4c91740f6a570ea4ff4cc216540be4cb886 \
+            --prop "com.android.build.boot.fingerprint:motorola/nio_retail/nio:11/S1RTS32.41-20-16-1-11/3797e3:user/release-keys" \
+            --prop "com.android.build.boot.os_version:11" \
+            --prop "com.android.build.boot.security_patch:2023-03-01"
+
+          cp \
+            boot-final/boot-pre-avb.img \
+            boot-final/boot-kernelsu-next-susfs.img
+
+          sha256sum \
+            boot-final/boot-kernelsu-next-susfs.img
+
+          ls -lh \
+            boot-final/boot-kernelsu-next-susfs.img
+
+      - name: Verify boot image size
+        working-directory: kernel
+        run: |
+          SIZE=$(stat -c%s boot-final/boot-kernelsu-next-susfs.img)
+
+          echo "Boot image size: $SIZE bytes"
+
+          test "$SIZE" -eq 100663296
+
+      - name: Create build information
+        working-directory: kernel
+        run: |
+          cat > boot-final/BUILD-INFO.txt <<'EOF'
+          Moto G100 XT2125-4 / NIO
+
+          Kernel:
+          LineageOS/android_kernel_motorola_sm8250
+          commit: 596146a4c4134a2190d9309c341db92ee015d5eb
+          branch: backup/lineage-20_20221213
+
+          KernelSU Next:
+          branch: legacy
+          commit: 5e2f85327336185a8330422ad04b84c6e6d38
+
+          SUSFS:
+          branch: kernel-4.19
+          commit: 001e699
+          version: v1.5.5
+
+          Kernel build:
+          ARCH=arm64
+          LLVM=1
+          LLVM_IAS=1
+          clang=21.1.8
+
+          Boot:
+          header_version=3
+          pagesize=4096
+          partition_size=100663296
+          algorithm=NONE
+          partition=boot
+
+          Original ramdisk preserved.
+          Original boot AVB properties preserved.
+          EOF
+
+          cat boot-final/BUILD-INFO.txt
+
+      - name: Upload kernel and boot artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: moto-g100-kernelsu-next-susfs
+          path: |
+            kernel/out/arch/arm64/boot/Image
+            kernel/out/vmlinux
+            kernel/boot-final/boot-kernelsu-next-susfs.img
+            kernel/boot-final/BUILD-INFO.txt
+          if-no-files-found: error
