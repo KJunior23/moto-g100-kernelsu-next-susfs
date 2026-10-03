@@ -120,7 +120,7 @@ jobs:
 
           echo "Integration patch applied successfully."
 
-            - name: Verify integration patch
+      - name: Verify integration patch
         run: |
           set -u
 
